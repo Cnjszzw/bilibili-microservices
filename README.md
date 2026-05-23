@@ -193,6 +193,43 @@ Nacos 控制台服务列表应出现 `bilibili-gateway`
 
 ---
 
+---
+
+## FAQ
+
+### Q: X-User-Id 注入原理是什么？下游服务需要改代码吗？
+
+**原理：信任边界前移。**
+
+```
+单体架构：
+  Controller → UserSupport.getCurrentUserId() → TokenUtil.verifyToken(token) → userId
+  （每个 Controller 各自从 token 解析 userId，重复代码多、密钥分散）
+
+微服务架构：
+  Gateway → TokenUtil.verifyToken(token) → 追加 X-User-Id 请求头 → 下游直接用
+  （鉴权只在入口做一次，结果通过请求头传递）
+```
+
+**Phase 1 需要改老代码吗？不需要。**
+
+Gateway 转发时原始请求头原封不动传过去（包括 `token`），老服务的 `UserSupport` 还是从 `token` 解析 userId，能正常工作。`X-User-Id` 目前只是附赠信息，老代码不用它。
+
+**什么时候真正起作用？**
+
+Phase 2 拆分 Content Service 时，新服务从零开始写，不需要继承老代码的 `TokenUtil` 和 `UserSupport`，直接读请求头：
+
+```java
+// 新服务写法：不需要 JWT 依赖
+public void addVideo(@RequestHeader("X-User-Id") Long userId) { ... }
+```
+
+**为什么不在 Phase 1 改老代码？**
+
+改老代码是纯风险没收益的事。等拆服务时新服务用新写法，老代码随着域被拆完自然消失，不需要主动去改。
+
+---
+
 ## 下一步（Phase 2）
 
 拆分 Content Service：
