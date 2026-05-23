@@ -12,7 +12,7 @@ import java.util.Set;
 /**
  * 通过 Feign 调用 legacy 用户服务获取用户信息
  */
-@FeignClient(name = "bilibili-legacy-service")
+@FeignClient(name = "bilibili-legacy-service", contextId = "legacyUser")
 public interface LegacyUserFeignClient {
 
     @GetMapping("/user/info")

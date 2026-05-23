@@ -10,7 +10,7 @@ import org.springframework.web.bind.annotation.RequestBody;
  * 通过 Feign 调用 legacy 动态服务创建动态
  * 对应老代码中 UserMomentsService.addUserMoments()
  */
-@FeignClient(name = "bilibili-legacy-service")
+@FeignClient(name = "bilibili-legacy-service", contextId = "legacyMoment")
 public interface LegacyMomentFeignClient {
 
     @PostMapping("/user-moments")
