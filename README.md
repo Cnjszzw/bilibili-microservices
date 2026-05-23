@@ -230,9 +230,18 @@ public void addVideo(@RequestHeader("X-User-Id") Long userId) { ... }
 
 ---
 
-### Q: Feign、OpenFeign 是一个东西吗？远程调用的接口和 DTO 怎么管理？
+### Q: Feign 远程调用涉及的@FeignClient接口、DTO 实体如何避免在两个服务中重复定义？
 
-**Feign vs OpenFeign：同一个东西，只是换了维护者。**
+远程调用涉及两个层面的"重复"问题：
+
+- **接口层面**：`@FeignClient` 接口在调用方定义，Controller 在提供方定义，两者定义的是同一套契约（路径、参数、返回值），是否各写各的？
+- **实体层面**：传入和返回的 Java 对象（User、UserMoment 等），是否两个服务各定义一份？
+
+---
+
+#### 一、Feign vs OpenFeign
+
+同一个东西，只是换了维护者：
 
 | | Feign | OpenFeign |
 |--|-------|-----------|
@@ -241,50 +250,121 @@ public void addVideo(@RequestHeader("X-User-Id") Long userId) { ... }
 | Maven坐标 | `com.netflix.feign:feign-core` | `org.springframework.cloud:spring-cloud-starter-openfeign` |
 | 注解 | `@RequestLine` | `@GetMapping` / `@PostMapping`（Spring MVC 风格） |
 
-日常说的"Feign"就是 OpenFeign，Spring Cloud 把它包了一层，注解统一成 Spring MVC 风格，自动接入 Nacos 服务发现。
+本项目的 `spring-cloud-starter-openfeign` 就是 OpenFeign，日常交流大家习惯叫 Feign。
 
-**远程调用的接口和 DTO 怎么避免重复？**
+---
 
-三种方案，业界逐级演进：
+#### 二、问题1：@FeignClient 接口重复问题
 
-| 方案 | 做法 | 缺点 |
-|------|------|------|
-| A: 复制 domain 类 | 调用方把提供方的类复制一份（Phase 2 当前做法） | 类重复 + 字段过度暴露（调用方能看到密码等敏感字段） |
-| B: 共享 domain 类 | 全量 domain 提到 common 模块 | 所有服务依赖全量字段，改一个字段影响所有服务 |
-| C: Feign 接口放 common + DTO 精简 | common 里只放 Feign 接口 + 精简 DTO | 需要提供方多做一层转换 |
+**当前 Phase 2 的现状——接口确实写了两遍：**
 
-**方案 C 是业界推荐做法——DTO（Data Transfer Object）是关键：**
-
-跨服务传输不应该用全量 domain 类，而是用只包含必要字段的精简对象：
+调用方（content-service）定义 Feign 接口：
 
 ```java
-// common 里的 Feign 接口 + DTO（只定义一次）
-// bilibili-common/api/UserFeignApi.java
+// content-service: com/bilibili/content/feign/LegacyMomentFeignClient.java
+@FeignClient(name = "bilibili-legacy-service")
+public interface LegacyMomentFeignClient {
+    @PostMapping("/user-moments")
+    JsonResponse<String> addUserMoments(@RequestBody UserMoment userMoment);
+}
+```
+
+提供方（legacy-service）实现对应的 Controller：
+
+```java
+// legacy-service: com/imooc/bilibili/api/UserMomentsApi.java
+@RestController
+public class UserMomentsApi {
+    @PostMapping("/user-moments")
+    public JsonResponse<String> addUserMoments(@RequestBody UserMoment userMoment) {
+        userMomentsService.addUserMoments(userMoment);
+        return JsonResponse.success();
+    }
+}
+```
+
+**问题**：路径 `/user-moments`、方法签名、参数类型在两处各自定义了一遍。如果提供方改了接口路径，调用方不知道，运行时直接 404。
+
+**解决方案——接口提到 common，提供方定义契约，调用方只依赖接口：**
+
+Phase 3 的改进方向：
+
+```java
+// bilibili-common/src/main/java/com/bilibili/common/api/MomentFeignApi.java
+// 这一步只需要定义一次，放 common 里
+@FeignClient(name = "bilibili-social-service")  // Phase 4 会独立为 social-service
+public interface MomentFeignApi {
+    @PostMapping("/user-moments")
+    JsonResponse<String> addUserMoments(@RequestBody UserMomentDTO dto);
+}
+```
+
+然后两方各自依赖 common，不再各自定义：
+
+```
+调用方 (content-service) → implements MomentFeignApi  →  只需要 @Autowired MomentFeignApi 即可
+                                                                      ↑
+提供方 (social-service)   → 提供 /user-moments 的 Controller  ←  提供方内部实现
+```
+
+- **接口是提供方定义的契约**：提供方承诺"我提供 `/user-moments`，参数是 `UserMomentDTO`"。
+- `@FeignClient` 接口只需在 common 中定义一次，调用方不需要知道提供方内部怎么实现的。
+- 提供方可以换成任何实现（直接写库、发 MQ、调第三方），调用方不关心。
+
+**但有一个讲究**：`@FeignClient` 接口应该由谁放到 common？
+
+由**提供方**定义并放到 common。因为提供方最清楚自己暴露了什么能力、接口会怎么演进。调用方只是消费者，不应该替提供方决定接口长什么样。
+
+---
+
+#### 三、问题2：实体（DTO）重复问题
+
+Feign 调用的入参和返回值，跨服务时传什么 Java 对象？
+
+**三种方案对比：**
+
+| 方案 | 做法 | 优点 | 缺点 |
+|------|------|------|------|
+| A: 复制全量 domain 类 | 调用方把提供方的 `User.java` 完整复制一份 | Phase 2 最快跑通 | 类重复 + 调用方能看到 password/phone 等不应暴露的字段 |
+| B: 共享全量 domain 类 | 把 `User.java` 提到 common，两边依赖同一个类 | 类不重复 | 所有服务依赖全量字段，改一个字段影响所有服务 |
+| C: 提供方定义精简 DTO 放到 common | common 里放精简的 `UserDTO`（只有 3 个字段） | 接口清晰、字段最小化、服务解耦 | 提供方需要多做一层 domain→DTO 转换 |
+
+**方案 C 是业界推荐做法——DTO（Data Transfer Object）：**
+
+```java
+// bilibili-common/api/dto/UserDTO.java —— 只定义一次
+public class UserDTO {
+    private Long id;
+    private String nick;      // content-service 只需要展示 UP 主昵称
+    private String avatar;    // 和头像，不需要 password、phone、salt
+}
+
+// bilibili-common/api/UserFeignApi.java —— 只定义一次
 @FeignClient(name = "bilibili-user-service")
 public interface UserFeignApi {
     @GetMapping("/user/info")
-    UserDTO getUserInfo(@RequestParam Long userId);  // 返回精简 DTO
-}
-
-// bilibili-common/api/dto/UserDTO.java
-public class UserDTO {
-    private Long id;        // content-service 只需要这 3 个字段
-    private String nick;    // 永远不会拿到 password、phone
-    private String avatar;
+    UserDTO getUserInfo(@RequestParam Long userId);
 }
 ```
 
 ```
-content-service ─依赖→ common（接口+DTO） ─实现→ user-service（内部维护完整 User domain）
+content-service ─依赖→ common（接口+DTO） ←依赖─ user-service（提供方，内部维护完整 User domain）
+                        ↑
+               UserFeignApi + UserDTO
+               各写一次，都在 common
 ```
 
-- **接口只写一次**（在 common），调用方和提供方各自依赖 common
-- **DTO 各管各的**：每个 Feign 接口有自己的精简 DTO，不把整张表暴露出去
-- **提供方负责转换**：user-service 从完整 `User` 提取出 `UserDTO` 返回给调用方
+- **DTO 各管各的**：每个 Feign 接口有自己的精简 DTO。用户接口的 DTO 是 `UserDTO`（3 个字段），动态接口的 DTO 是 `MomentDTO`（不同字段）。两者互不影响。
+- **提供方负责 domain→DTO 转换**：user-service 内部从完整的 `User`（几十个字段）提取出 `UserDTO`（3 个字段）返回。
+- **调用方永远看不到不应看的字段**：content-service 只需要昵称和头像，拿不到密码。
 
-**当前 Phase 2 为什么用方案 A？**
+---
 
-共享 DB 阶段字段暂时一致，先让 Feign 调用链路跑通。Phase 3 拆 User Service 后，用户表完全归属 user-service，content-service 只能通过 Feign 获取用户信息——那时提取 DTO 到 common 的收益就完全体现出来了。
+#### 四、当前 Phase 2 为什么暂时用方案 A
+
+Phase 2 的目标是先让 Feign 调用链路跑通（content-service → legacy 发动态），验证 Nacos 服务发现 + Feign + Gateway 路由整个链路是通的。此时共享 DB，domain 类字段暂时一致，直接复制是最快的方式。
+
+Phase 3 拆 User Service 后，升级到方案 C——Feign 接口和 DTO 提到 common，消除重复，同时 content-service 再也看不到用户表的敏感字段。
 
 ---
 
