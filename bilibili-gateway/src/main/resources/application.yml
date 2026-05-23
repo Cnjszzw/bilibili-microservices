@@ -26,7 +26,20 @@ spring:
             exposedHeaders: "*"
             maxAge: 3600
       routes:
-        #  legacy 单体应用路由
+        # ===== Content Service（Phase 2）=====
+        - id: content-video
+          uri: lb://bilibili-content-service
+          predicates:
+            - Path=/videos/**, /video-slices/**, /video-slices-simple/**, /video-likes/**, /video-collections/**, /video-coins/**, /video-comments/**, /video-details/**, /video-views/**, /video-view-counts/**, /video-triple-clicks/**, /viewImage/**
+        - id: content-file
+          uri: lb://bilibili-content-service
+          predicates:
+            - Path=/md5files/**, /file-slices/**
+        - id: content-tag
+          uri: lb://bilibili-content-service
+          predicates:
+            - Path=/contents/**, /tags/**
+        # ===== Legacy 单体应用（兜底路由）=====
         - id: bilibili-legacy-service
           uri: lb://bilibili-legacy-service
           predicates:

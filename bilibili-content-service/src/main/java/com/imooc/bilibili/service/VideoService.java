@@ -1,0 +1,508 @@
+package com.imooc.bilibili.service;
+
+
+import com.alibaba.fastjson.JSONObject;
+import com.bilibili.content.feign.LegacyMomentFeignClient;
+import com.bilibili.content.feign.LegacyUserFeignClient;
+import com.imooc.bilibili.dao.VideoDao;
+import com.imooc.bilibili.domain.*;
+import com.imooc.bilibili.domain.constant.UserMomentsConstant;
+import com.imooc.bilibili.domain.exception.ConditionException;
+import com.imooc.bilibili.service.config.ThreadPoolConfig;
+import com.imooc.bilibili.service.util.IpUtil;
+import eu.bitwalker.useragentutils.UserAgent;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import java.io.IOException;
+import java.text.SimpleDateFormat;
+import java.util.*;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.stream.Collectors;
+
+@Service
+public class VideoService {
+
+    private static final Logger logger = LoggerFactory.getLogger(VideoService.class);
+
+
+    @Autowired
+    private VideoDao videoDao;
+
+    @Autowired
+    @Qualifier("minioStorageService")
+    private StorageService storageService;
+
+    @Autowired
+    private UserCoinService userCoinService;
+
+    @Autowired
+    private LegacyUserFeignClient legacyUserFeignClient;
+
+    @Autowired
+    private ContentService contentService;
+
+    @Autowired
+    private LegacyMomentFeignClient legacyMomentFeignClient;
+
+    @Autowired
+    ThreadPoolConfig threadPoolConfig;
+
+
+    @Transactional
+    public void addVideos(Video video) {
+        video.setCreateTime(new Date());
+        video.setUpdateTime(new Date());
+        videoDao.addVideos(video);
+        List<VideoTag> tagList = video.getVideoTagList();
+        for (VideoTag tag : tagList) {
+            tag.setVideoId(video.getId());
+            tag.setCreateTime(new Date());
+        }
+        videoDao.batchAddVideoTags(tagList);
+        //新增：自动发布动态
+        try{
+            //添加动态内容
+            Content content = new Content();
+            content.setContentDetail(JSONObject.parseObject(JSONObject.toJSONString(video)));
+            contentService.addContent(content);
+            Long contentId = content.getId();
+            //添加用户发布视频动态
+            UserMoment moment = new UserMoment();
+            moment.setType(UserMomentsConstant.TYPE_VIDEO);
+            moment.setContentId(contentId);
+            moment.setUserId(video.getUserId());
+            legacyMomentFeignClient.addUserMoments(moment);
+        }catch (Exception e){
+            throw new ConditionException("发布视频动态失败");
+        }
+    }
+
+    public PageResult<Video> pageListVideos(Integer start, Integer limit, String area) {
+        List<Video> videoList = videoDao.pageListVideos(start, limit, area);
+        for (Video video : videoList) {
+            List<VideoTag> tagList = videoDao.queryVideoTagsByVideoId(video.getId());
+            video.setVideoTagList(tagList);
+        }
+        //填充播放量和弹幕量
+        videoList = getVideoCount(videoList);
+        PageResult<Video> pageResult = new PageResult<>();
+        pageResult.setList(videoList);
+        Integer totalNUm = videoDao.queryVideosTotalNum(area);
+        pageResult.setTotal(totalNUm);
+        return pageResult;
+    }
+
+    public void viewVideoOnlineBySlices(HttpServletRequest request,
+                                        HttpServletResponse response,
+                                        String url) {
+        try {
+            storageService.viewVideoOnlineBySlices(request, response, url);
+        } catch (Exception e) {
+            logger.error("视频播放失败: url={}", url, e);
+        }
+    }
+
+    public void viewVideoOnlineBySlicesSimple(HttpServletRequest request, HttpServletResponse response, String url) throws Exception {
+        storageService.viewVideoOnlineBySlices(request, response, url);
+    }
+
+    public void addLikeVideo(Long videoId, Long userId) {
+        //判断视频是否存在
+        Video video = videoDao.getVideoByVideoId(videoId);
+        if (video == null) {
+            throw new ConditionException("视频不存在");
+        }
+        //判断视频是否已经点赞过
+        VideoLike videoLike = videoDao.getVideoLike(userId, videoId);
+        if (videoLike != null) {
+            throw new ConditionException("已经点赞过");
+        }
+        VideoLike videoLikeNew = new VideoLike();
+        videoLikeNew.setUserId(userId);
+        videoLikeNew.setVideoId(videoId);
+        videoLikeNew.setCreateTime(new Date());
+        //用户的点赞记录入库
+        videoDao.addLikeVideo(videoLikeNew);
+
+    }
+
+    public void deleteLikeVideo(Long videoId, Long userId) {
+        //判断视频是否存在
+        Video video = videoDao.getVideoByVideoId(videoId);
+        if (video == null) {
+            throw new ConditionException("视频不存在");
+        }
+        //判断视频是否已经点赞过
+        VideoLike videoLike = videoDao.getVideoLike(userId, videoId);
+        if (videoLike == null) {
+            throw new ConditionException("没有点赞过");
+        }
+        videoDao.deleteLikeVideo(userId, videoId);
+    }
+
+    public Map<String, Object> getLikeVideo(Long videoId, Long userId) {
+        Integer count = videoDao.getLikeVideoNum(videoId);
+        Map<String, Object> map = new HashMap<>();
+        map.put("count", count);
+        if (userId != null) {
+            Boolean liked = null;
+            VideoLike videoLike = videoDao.getVideoLike(userId, videoId);
+            if (videoLike != null) {
+                liked = true;
+            } else {
+                liked = false;
+            }
+            map.put("like", liked);
+        }
+        return map;
+    }
+
+    @Transactional
+    public void addVideoCollection(VideoCollection videoCollection) {
+        //判断视频是否存在
+        Video video = videoDao.getVideoByVideoId(videoCollection.getVideoId());
+        if (video == null) {
+            throw new ConditionException("视频不存在");
+        }
+        videoDao.delVideoCollection(videoCollection.getVideoId(),videoCollection.getUserId(),videoCollection.getGroupId());
+        videoCollection.setUserId(videoCollection.getUserId());
+        videoCollection.setCreateTime(new Date());
+        videoDao.addVideoCollection(videoCollection);
+    }
+
+    public void deleteVideoCollection(Long videoId, Long userId) {
+        videoDao.delVideoCollection(videoId, userId, null);
+    }
+
+    public Map<String, Object> getVideoCollectionCounts(Long videoId, Long userId) {
+        Integer count = videoDao.queryVideoCollectionCounts(videoId);
+        Map<String, Object> map = new HashMap<>();
+        map.put("count", count);
+        if (userId != null) {
+            Boolean collected = null;
+            VideoCollection videoCollection = videoDao.queryVideoCollection(videoId, userId);
+            if (videoCollection != null) {
+                collected = true;
+            } else {
+                collected = false;
+            }
+            map.put("collected", collected);
+        }
+        return map;
+    }
+
+    @Transactional
+    public void addVideoCoins(VideoCoin videoCoins, Long userId) {
+        //判断视频是否存在
+        Video video = videoDao.getVideoByVideoId(videoCoins.getVideoId());
+        if (video == null) {
+            throw new ConditionException("视频不存在");
+        }
+        if(videoCoins.getAmount() == null ){
+            throw new ConditionException("投币数量不能为空");
+        }
+        //判断投币的数量是否大于零
+        if (videoCoins.getAmount() <= 0) {
+            throw new ConditionException("投币数量小于等于0！");
+        }
+        //判断用户硬币数量是否大于等于要投币的数量
+        Integer userCoinAmout = userCoinService.getUserCoinAmount(userId);
+        if (userCoinAmout == null || userCoinAmout < videoCoins.getAmount()) {
+            throw new ConditionException("硬币不足");
+        }
+        //判断用户是否投币过
+        VideoCoin dbvideoCoin = userCoinService.queryVideoCoinStatus(videoCoins.getVideoId(), userId);
+        if(dbvideoCoin == null){
+            //没投过币，执行新增逻辑
+            videoCoins.setUserId(userId);
+            videoCoins.setCreateTime(new Date());
+            videoCoins.setUpdateTime(new Date());
+            userCoinService.addVideoCoin(videoCoins);
+            userCoinService.updateUserCoinAmount(userId, userCoinAmout - videoCoins.getAmount() ,new Date());
+        }else{
+            //投币过，执行修改逻辑
+            videoCoins.setUpdateTime(new Date());
+            videoCoins.setUserId(userId);
+            videoCoins.setAmount(dbvideoCoin.getAmount() + videoCoins.getAmount());
+            userCoinService.updateVideoCoin(videoCoins);
+            userCoinService.updateUserCoinAmount(userId, userCoinAmout - (videoCoins.getAmount() - dbvideoCoin.getAmount()),new Date());
+        }
+    }
+
+    public Map<String, Object> getVideoCoins(Long videoId, Long userId) {
+        Integer count = videoDao.getVideoCoins(videoId,userId);
+        Map<String, Object> map = new HashMap<>();
+        map.put("count", count);
+        if (userId != null) {
+            Boolean coined = null;
+            VideoCoin videoCoin = userCoinService.queryVideoCoinStatus(videoId, userId);
+            if (videoCoin != null) {
+                coined = true;
+            } else {
+                coined = false;
+            }
+            map.put("hasCoin", coined);
+        }
+        return map;
+    }
+
+    public void addVideoComment(VideoComment videoComment) {
+        //判断视频是否存在
+        Video video = videoDao.getVideoByVideoId(videoComment.getVideoId());
+        if (video == null) {
+            throw new ConditionException("视频不存在");
+        }
+        videoComment.setCreateTime(new Date());
+        videoComment.setUpdateTime(new Date());
+        videoDao.addVideoComment(videoComment);
+    }
+
+    @Transactional
+    public PageResult<VideoComment> pageListVideoComments(Integer start, Integer limit, Long videoId) {
+        //判断视频是否存在
+        Video video = videoDao.getVideoByVideoId(videoId);
+        if (video == null) {
+            throw new ConditionException("视频不存在");
+        }
+        Integer videoTotalCommentNum = videoDao.getVideoTotalCommentNum(videoId);
+        PageResult<VideoComment> res = new PageResult<>();
+        res.setTotal(videoTotalCommentNum);
+        if(videoTotalCommentNum == 0){
+            return res;
+        }
+        //查询视频评论接口
+        Map<String,Object> params = new HashMap<>();
+        params.put("start",start);
+        params.put("limit",limit);
+        params.put("videoId",videoId);
+        //查询出所有的一级评论
+        List<VideoComment> videoComments = videoDao.pageListVideoComments(params);
+        if(videoComments.size() <= 0){
+            return res;
+        }
+        //查询出所有的二级评论
+        List<VideoComment> videoCommentReplies = videoDao.pageListVideoCommentReplies(videoId);
+        //将二级评论设置到一级评论中
+        for (VideoComment videoComment : videoComments) {
+            List<VideoComment> childList = new ArrayList<>();
+            for (VideoComment videoCommentReply : videoCommentReplies) {
+                //好像这个逻辑不太对啊，应该是判断评论的id和其他评论的rrootId是否相等
+//                if(videoComment.getUserId().equals(videoCommentReply.getReplyUserId())){
+//                    childList.add(videoCommentReply);
+//                }
+                if(videoComment.getId().equals(videoCommentReply.getRootId())){
+                    childList.add(videoCommentReply);
+                }
+            }
+            videoComment.setChildList(childList);
+        }
+        //查询出所有用户的用户信息
+        Set<Long> userList = videoComments.stream().map(VideoComment::getUserId).collect(Collectors.toSet());
+        Set<Long> userReplyList = videoCommentReplies.stream().map(VideoComment::getUserId).collect(Collectors.toSet());
+        userList.addAll(userReplyList);
+        List<UserInfo> userInfoList = legacyUserFeignClient.getUserInfoByUserIds(userList);
+        Map<Long, UserInfo> userInfoListMap = userInfoList.stream().collect(Collectors.toMap(UserInfo::getUserId, UserInfo -> UserInfo));
+        //将用户信息设置到一级评论和二级评论中
+        for (VideoComment videoComment : videoComments) {
+            List<VideoComment> childList = videoComment.getChildList();
+            for (VideoComment comment : childList) {
+                comment.setUserInfo(userInfoListMap.get(comment.getUserId()));
+                comment.setReplyUserInfo(userInfoListMap.get(comment.getReplyUserId()));
+            }
+            videoComment.setUserInfo(userInfoListMap.get(videoComment.getUserId()));
+        }
+        res.setList(videoComments);
+        return res;
+    }
+
+    public Map<String, Object> getVideoDetails(Long videoId) {
+        Video video =  videoDao.getVideoDetails(videoId);
+        if(video == null){
+            throw new ConditionException("视频不存在");
+        }
+        List<VideoTag> videoTags = videoDao.getVideoTags(videoId);
+        Set<Long> videoTagIds = videoTags.stream().map(VideoTag::getTagId).collect(Collectors.toSet());
+        List<Tag> TagLists = videoDao.getVideoTagNamesByIds(videoTagIds);
+        List<Map<String, Object>> videoTagList = new ArrayList<>();
+        for (Tag tagList : TagLists) {
+            Map<String, Object> tagMap = new HashMap<>();
+            tagMap.put("tagId", tagList.getId());
+            tagMap.put("tagName", tagList.getName());
+            videoTagList.add(tagMap);
+        }
+        Long userId = video.getUserId();
+        User user = legacyUserFeignClient.getUserInfo(userId);
+        if(user == null){
+            throw new ConditionException("用户不存在");
+        }
+        UserInfo userInfo = user.getUserInfo();
+        Map<String, Object> result = new HashMap<>();
+        result.put("video", video);
+        result.put("userInfo", userInfo);
+        result.put("videoTagList", videoTagList);
+        return result;
+    }
+
+    public void addVideoView(VideoView videoView, HttpServletRequest request) {
+        Long userId = videoView.getUserId();
+        Long videoId = videoView.getVideoId();
+        //生成clientId
+        String agent = request.getHeader("User-Agent");
+        UserAgent userAgent = UserAgent.parseUserAgentString(agent);
+        String clientId = String.valueOf(userAgent.getId());
+        String ip = IpUtil.getIP(request);
+        Map<String, Object> params = new HashMap<>();
+        if(userId != null){
+            params.put("userId", userId);
+        }else{
+            params.put("ip", ip);
+            params.put("clientId", clientId);
+        }
+        Date now = new Date();
+        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
+        params.put("today", sdf.format(now));
+        params.put("videoId", videoId);
+        //添加观看记录
+        VideoView dbVideoView = videoDao.getVideoView(params);
+        if(dbVideoView == null){
+            videoView.setIp(ip);
+            videoView.setClientId(clientId);
+            videoView.setCreateTime(new Date());
+            videoDao.addVideoView(videoView);
+        }
+    }
+
+    public Integer getVideoViewCounts(Long videoId) {
+        return videoDao.getVideoViewCounts(videoId);
+    }
+
+    public void viewImage(HttpServletRequest request, HttpServletResponse response, String url) throws Exception {
+        storageService.viewImage(request, response, url);
+    }
+
+    public List<Video> getVideoCount(List<Video> videoList){
+        if(!videoList.isEmpty()){
+            //获取视频id集合
+            Set<Long> videoIdSet = videoList.stream().map(Video :: getId)
+                    .collect(Collectors.toSet());
+            //统计播放量
+            Map<Long, Integer> viewCountMap = this.batchCountVideoView(videoIdSet);
+            //统计弹幕量
+            Map<Long, Integer> danmuCountMap = this.batchCountVideoDanmu(videoIdSet);
+            //构建返回数据
+            videoList.forEach(video -> {
+                video.setViewCount(viewCountMap.get(video.getId()));
+                video.setDanmuCount(danmuCountMap.get(video.getId()));
+            });
+        }
+        return videoList;
+    }
+
+    //统计视频播放量
+    public Map<Long, Integer>  batchCountVideoView(Set<Long> videoIdSet){
+        List<VideoViewCount> viewCount = videoDao.getVideoViewCountByVideoIds(videoIdSet);
+        return viewCount.stream()
+                .collect(Collectors.toMap(VideoViewCount::getVideoId,
+                        VideoViewCount::getCount));
+    }
+
+    //统计视频弹幕量
+    public Map<Long, Integer> batchCountVideoDanmu(Set<Long> videoIdSet){
+        List<VideoDanmuCount> danmuCount = videoDao.getVideoDanmuCountByVideoIds(videoIdSet);
+        return danmuCount.stream()
+                .collect(Collectors.toMap(VideoDanmuCount::getVideoId,
+                        VideoDanmuCount::getCount));
+    }
+
+
+    //利用线程池，采用多线程技术去获取一键三连的数据
+    public Map<String, Object> getTripleClicks(Long videoId, Long userId) throws  Exception {
+
+        ThreadPoolExecutor threadPool = ThreadPoolConfig.getThreadPool();
+
+        Future<Object> likeFuture = threadPool.submit(new Callable<Object>() {
+            @Override
+            public Object call() throws Exception {
+                Map<String, Object> likeVideo = getLikeVideo(videoId, userId);
+                return likeVideo;
+            }
+        });
+
+        Future<Object> coinFuture = threadPool.submit(new Callable<Object>() {
+            @Override
+            public Object call() throws Exception {
+                Map<String, Object> videoCoins = getVideoCoins(videoId, userId);
+                return videoCoins;
+            }
+        });
+
+        Future<Object> collectionFuture = threadPool.submit(new Callable<Object>() {
+            @Override
+            public Object call() throws Exception {
+                Map<String, Object> videoCoins = getVideoCollectionCounts(videoId, userId);
+                return videoCoins;
+            }
+        });
+
+        Map<String, Object> map = new HashMap<>();
+        map.put("likeFuture",likeFuture.get());
+        map.put("coinFuture",coinFuture.get());
+        map.put("collectionFuture",collectionFuture.get());
+
+        return map;
+    }
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

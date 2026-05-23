@@ -1,0 +1,200 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD MAPPER 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+
+<mapper namespace="com.imooc.bilibili.dao.UserDao">
+
+
+    <select id="getUserByPhone" parameterType="String" resultType="com.imooc.bilibili.domain.User">
+        select *
+        from t_user
+        where phone = #{phone}
+    </select>
+
+    <insert id="addUser" parameterType="com.imooc.bilibili.domain.User" useGeneratedKeys="true" keyProperty="id">
+        insert into t_user
+        (phone,
+         email,
+         password,
+         salt,
+         createTime,
+         updateTime)
+        values (#{phone},
+                #{email},
+                #{password},
+                #{salt},
+                #{createTime},
+                #{updateTime})
+    </insert>
+
+    <insert id="addUserInfo" parameterType="com.imooc.bilibili.domain.UserInfo">
+        insert into t_user_info
+        (userId,
+         nick,
+         gender,
+         birth,
+         createTime,
+         updateTime)
+        values (#{userId},
+                #{nick},
+                #{gender},
+                #{birth},
+                #{createTime},
+                #{updateTime})
+    </insert>
+
+
+    <select id="getUserById" parameterType="java.lang.Long" resultType="com.imooc.bilibili.domain.User">
+        select *
+        from t_user
+        where id = #{id}
+    </select>
+
+    <select id="getUserInfoByUserId" parameterType="java.lang.Long" resultType="com.imooc.bilibili.domain.UserInfo">
+        select *
+        from t_user_info
+        where userId = #{userId}
+    </select>
+
+    <update id="updateUser" parameterType="com.imooc.bilibili.domain.User">
+        update t_user
+        set
+        <if test="phone != null and phone != ''">
+            phone = #{phone},
+        </if>
+        <if test="email != null and email != ''">
+            email = #{email},
+        </if>
+        <if test="password != null and password != ''">
+            password = #{password},
+        </if>
+        updateTime = #{updateTime}
+        where id = #{id}
+    </update>
+
+    <select id="getUserByPhoneOrEmail" parameterType="java.util.Map" resultType="com.imooc.bilibili.domain.User">
+        select * from t_user
+        where
+        1=1
+        <if test="phone != null and phone != ''">
+            and phone = #{phone}
+        </if>
+        <if test="email != null and email != ''">
+            and email = #{email}
+        </if>
+    </select>
+
+    <select id="getUserInfoByIds" resultType="com.imooc.bilibili.domain.UserInfo">
+        select * from t_user_info
+        <where>
+            userId in
+            <foreach collection="userFollowingsIds" item="userFollowingsId" open="(" separator="," close=")">
+                #{userFollowingsId}
+            </foreach>
+        </where>
+    </select>
+
+    <update id="updateUserInfo" parameterType="com.imooc.bilibili.domain.UserInfo">
+        update t_user_info
+        set
+        <if test="nick != null and nick != ''">
+            nick = #{nick},
+        </if>
+        <if test="avatar != null">
+            avatar = #{avatar},
+        </if>
+        <if test="sign != null">
+            sign = #{sign},
+        </if>
+        <if test="gender != null and gender != ''">
+            gender = #{gender},
+        </if>
+        <if test="birth != null and birth != ''">
+            birth = #{birth},
+        </if>
+        updateTime = #{updateTime}
+        where userId = #{userId}
+    </update>
+
+    <select id="pageCountUserInfos" resultType="java.lang.Integer">
+        select count(1) from t_user_info
+        where 1=1
+        <if test="nick != null and nick != ''">
+            and nick like concat('%',#{nick},'%')
+        </if>
+    </select>
+
+    <select id="pageListUserInfos" resultType="com.imooc.bilibili.domain.UserInfo">
+        select *
+        from t_user_info
+        <where>1=1
+            <if test="nick != null and nick != ''">
+                and nick like concat('%',#{nick},'%')
+            </if>
+        </where>
+        limit #{no} , #{size};
+    </select>
+
+    <delete id="deleteRefreshToken">
+        delete
+        from t_refresh_token
+        where refreshToken = #{refreshToken}
+    </delete>
+
+    <insert id="addRefreshToken">
+        insert into t_refresh_token
+            (refreshToken, userId, createTime)
+        values (#{refreshToken}, #{userId}, #{createTime})
+    </insert>
+
+    <select id="getRefreshTokenDetailByRefreshToken" resultType="com.imooc.bilibili.domain.RefreshTokenDetail">
+        select *
+        from t_refresh_token
+        where refreshToken = #{refreshToken}
+    </select>
+    <select id="getUserInfoByUserIds" resultType="com.imooc.bilibili.domain.UserInfo">
+        select * from t_user_info
+        where userId in
+        <foreach collection="userIdList" item="userId" open="(" separator="," close=")">
+            #{userId}
+        </foreach>
+
+    </select>
+
+
+</mapper>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,262 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD MAPPER 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!-- namespace是要和实体类对应的接口一模一样的 -->
+<mapper namespace="com.imooc.bilibili.dao.VideoDao">
+    <insert id="addVideos" useGeneratedKeys="true" keyProperty="id">
+        insert into t_video
+        (userId,
+         url,
+         thumbnail,
+         title,
+         type,
+         duration,
+         area,
+         description,
+         createTime,
+         updateTime)
+        values (#{userId},
+                #{url},
+                #{thumbnail},
+                #{title},
+                #{type},
+                #{duration},
+                #{area},
+                #{description},
+                #{createTime},
+                #{updateTime})
+    </insert>
+    <insert id="batchAddVideoTags">
+        insert into t_video_tag(
+        videoId,
+        tagId,
+        createTime
+        )values
+        <foreach collection="tagList" item="videoTag" separator=",">
+            (#{videoTag.videoId},#{videoTag.tagId},#{videoTag.createTime})
+        </foreach>
+    </insert>
+    <select id="pageListVideos" resultType="com.imooc.bilibili.domain.Video">
+        select * from t_video
+        <where>
+            <if test="area != null and area != ''">
+                and area = #{area}
+            </if>
+        </where>
+        limit #{start},#{limit}
+    </select>
+    <select id="queryVideosTotalNum" resultType="java.lang.Integer">
+        select count(*) from t_video
+        <where>
+            <if test="area != null and area != ''">
+                and area = #{area}
+            </if>
+        </where>
+    </select>
+    <select id="queryVideoTagsByVideoId" resultType="com.imooc.bilibili.domain.VideoTag">
+        select *
+        from t_video_tag
+        where videoId = #{videoId}
+    </select>
+    <select id="getVideoByVideoId" resultType="com.imooc.bilibili.domain.Video">
+        select *
+        from t_video
+        where id = #{videoId}
+    </select>
+    <select id="getVideoLike" resultType="com.imooc.bilibili.domain.VideoLike">
+        select *
+        from t_video_like
+        where videoId = #{videoId}
+          and userId = #{userId}
+    </select>
+    <select id="getLikeVideoNum" resultType="java.lang.Integer">
+        select count(*)
+        from t_video_like
+        where videoId = #{videoId}
+    </select>
+    <select id="queryVideoCollectionCounts" resultType="java.lang.Integer">
+        select count(*)
+        from t_video_collection
+        where videoId = #{videoId}
+    </select>
+    <select id="queryVideoCollection" resultType="com.imooc.bilibili.domain.VideoCollection">
+        select *
+        from t_video_collection
+        where videoId = #{videoId}
+          and userId = #{userId}
+    </select>
+    <select id="getVideoCoins" resultType="java.lang.Integer">
+        select sum(amount)
+        from t_video_coin
+        where videoId = #{videoId}
+    </select>
+    <select id="getVideoTotalCommentNum" resultType="java.lang.Integer">
+        select count(1)
+        from t_video_comment
+        where videoId = #{videoId}
+          and rootId is null;
+    </select>
+    <select id="pageListVideoComments" resultType="com.imooc.bilibili.domain.VideoComment">
+        select *
+        from t_video_comment
+        where videoId =
+              #{videoId}
+          and rootId is null
+        order by id
+                desc
+            limit #{start},
+                 #{limit}
+    </select>
+    <select id="pageListVideoCommentReplies" resultType="com.imooc.bilibili.domain.VideoComment">
+        select *
+        from t_video_comment
+        where videoId =
+              #{videoId}
+          and rootId is NOT null
+    </select>
+    <select id="getVideoDetails" resultType="com.imooc.bilibili.domain.Video">
+        select
+            *
+        from
+            t_video
+        where
+            id = #{id}
+    </select>
+    <insert id="addLikeVideo">
+        insert into t_video_like
+        (userId,
+         videoId,
+         createTime)
+        values (#{userId},
+                #{videoId},
+                #{createTime})
+    </insert>
+    <insert id="addVideoCollection">
+        insert into t_video_collection(videoId,
+                                       userId,
+                                       groupId,
+                                       createTime)
+        values (#{videoId},
+                #{userId},
+                #{groupId},
+                #{createTime})
+    </insert>
+    <insert id="addVideoComment">
+        insert into t_video_comment
+        (videoId,
+         userId,
+         comment,
+         replyUserId,
+         rootId,
+         createTime,
+         updateTime)
+        values (#{videoId},
+                #{userId},
+                #{comment},
+                #{replyUserId},
+                #{rootId},
+                #{createTime},
+                #{updateTime})
+    </insert>
+    <delete id="deleteLikeVideo">
+        delete
+        from t_video_like
+        where videoId = #{videoId}
+          and userId = #{userId}
+    </delete>
+    <delete id="delVideoCollection">
+        delete
+        from t_video_collection
+        where videoId = #{videoId}
+        and userId = #{userId}
+        <if test="groupId != null and groupId != '' ">
+            and groupId=#{groupId}
+        </if>
+    </delete>
+
+    <select id="getVideoView" parameterType="java.util.Map" resultType="com.imooc.bilibili.domain.VideoView">
+        select
+        *
+        from
+        t_video_view
+        where
+        videoId = #{videoId}
+        <if test="userId == null and clientId != null">
+            and clientId = #{clientId} and userId is null
+        </if>
+        <if test="userId != null">
+            and userId = #{userId}
+        </if>
+        <if test="ip != null and ip != '' ">
+            and ip = #{ip}
+        </if>
+        <if test="today != null and today != '' ">
+            and DATE_FORMAT(createTime,'%Y-%m-%d') = #{today}
+        </if>
+    </select>
+
+    <insert id="addVideoView" parameterType="com.imooc.bilibili.domain.VideoView">
+        insert into
+            t_video_view(
+            videoId,
+            userId,
+            clientId,
+            ip,
+            createTime
+        )values(
+                   #{videoId},
+                   #{userId},
+                   #{clientId},
+                   #{ip},
+                   #{createTime}
+               )
+    </insert>
+
+    <select id="getVideoViewCounts" parameterType="java.lang.Long" resultType="java.lang.Integer">
+        select
+            count(1)
+        from
+            t_video_view
+        where
+            videoId = #{videoId}
+    </select>
+    <select id="getVideoTags" resultType="com.imooc.bilibili.domain.VideoTag">
+        select * from t_video_tag where videoId = #{videoId}
+    </select>
+    <select id="getVideoTagNamesByIds" resultType="com.imooc.bilibili.domain.Tag" >
+        select * from t_tag
+        <where>
+            id in
+            <foreach collection="videoTagIds" item="videoTagId" open="(" separator="," close=")">
+                #{videoTagId}
+            </foreach>
+        </where>
+    </select>
+    <select id="getVideoViewCountByVideoIds" resultType="com.imooc.bilibili.domain.VideoViewCount">
+        SELECT
+        videoId,
+        count( id ) count
+        FROM
+        t_video_view
+        WHERE
+        videoId in
+        <foreach collection="videoIds" item="videoId" open="(" close=")" separator=",">
+            #{videoId}
+        </foreach>
+        GROUP BY videoId
+    </select>
+
+    <select id="getVideoDanmuCountByVideoIds" resultType="com.imooc.bilibili.domain.VideoDanmuCount">
+        select
+        videoId,
+        count( id ) count
+        from
+        t_danmu
+        where
+        videoId in
+        <foreach collection="videoIds" item="videoId" open="(" close=")" separator=",">
+            #{videoId}
+        </foreach>
+        GROUP BY videoId
+    </select>
+</mapper>
