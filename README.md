@@ -230,6 +230,64 @@ public void addVideo(@RequestHeader("X-User-Id") Long userId) { ... }
 
 ---
 
+### Q: Feign、OpenFeign 是一个东西吗？远程调用的接口和 DTO 怎么管理？
+
+**Feign vs OpenFeign：同一个东西，只是换了维护者。**
+
+| | Feign | OpenFeign |
+|--|-------|-----------|
+| 全称 | Netflix Feign | Spring Cloud OpenFeign |
+| 维护方 | Netflix（已停维） | Spring Cloud 团队 |
+| Maven坐标 | `com.netflix.feign:feign-core` | `org.springframework.cloud:spring-cloud-starter-openfeign` |
+| 注解 | `@RequestLine` | `@GetMapping` / `@PostMapping`（Spring MVC 风格） |
+
+日常说的"Feign"就是 OpenFeign，Spring Cloud 把它包了一层，注解统一成 Spring MVC 风格，自动接入 Nacos 服务发现。
+
+**远程调用的接口和 DTO 怎么避免重复？**
+
+三种方案，业界逐级演进：
+
+| 方案 | 做法 | 缺点 |
+|------|------|------|
+| A: 复制 domain 类 | 调用方把提供方的类复制一份（Phase 2 当前做法） | 类重复 + 字段过度暴露（调用方能看到密码等敏感字段） |
+| B: 共享 domain 类 | 全量 domain 提到 common 模块 | 所有服务依赖全量字段，改一个字段影响所有服务 |
+| C: Feign 接口放 common + DTO 精简 | common 里只放 Feign 接口 + 精简 DTO | 需要提供方多做一层转换 |
+
+**方案 C 是业界推荐做法——DTO（Data Transfer Object）是关键：**
+
+跨服务传输不应该用全量 domain 类，而是用只包含必要字段的精简对象：
+
+```java
+// common 里的 Feign 接口 + DTO（只定义一次）
+// bilibili-common/api/UserFeignApi.java
+@FeignClient(name = "bilibili-user-service")
+public interface UserFeignApi {
+    @GetMapping("/user/info")
+    UserDTO getUserInfo(@RequestParam Long userId);  // 返回精简 DTO
+}
+
+// bilibili-common/api/dto/UserDTO.java
+public class UserDTO {
+    private Long id;        // content-service 只需要这 3 个字段
+    private String nick;    // 永远不会拿到 password、phone
+    private String avatar;
+}
+```
+
+```
+content-service ─依赖→ common（接口+DTO） ─实现→ user-service（内部维护完整 User domain）
+```
+
+- **接口只写一次**（在 common），调用方和提供方各自依赖 common
+- **DTO 各管各的**：每个 Feign 接口有自己的精简 DTO，不把整张表暴露出去
+- **提供方负责转换**：user-service 从完整 `User` 提取出 `UserDTO` 返回给调用方
+
+**当前 Phase 2 为什么用方案 A？**
+
+共享 DB 阶段字段暂时一致，先让 Feign 调用链路跑通。Phase 3 拆 User Service 后，用户表完全归属 user-service，content-service 只能通过 Feign 获取用户信息——那时提取 DTO 到 common 的收益就完全体现出来了。
+
+---
+
 ## 下一步（Phase 2）
 
 拆分 Content Service：
