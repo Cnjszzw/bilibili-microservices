@@ -31,12 +31,19 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
     private final AntPathMatcher pathMatcher = new AntPathMatcher();
 
     // 白名单路径（不需要 token）
+    // 包含：注册登录、游客可访问的视频浏览接口等
     private static final String[] WHITE_LIST = {
             "/rsa-pks",
             "/users",
             "/user-tokens",
             "/user-tokens/**",
             "/demo/**",
+            // 游客可访问的视频接口（不调用 UserSupport）
+            "/videos",
+            "/video-details",
+            "/video-slices",
+            "/video-slices-simple",
+            "/viewImage",
     };
 
     @Override

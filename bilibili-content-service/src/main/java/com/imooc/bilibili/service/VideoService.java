@@ -3,7 +3,6 @@ package com.imooc.bilibili.service;
 
 import com.alibaba.fastjson.JSONObject;
 import com.bilibili.content.feign.LegacyMomentFeignClient;
-import com.bilibili.content.feign.LegacyUserFeignClient;
 import com.imooc.bilibili.dao.VideoDao;
 import com.imooc.bilibili.domain.*;
 import com.imooc.bilibili.domain.constant.UserMomentsConstant;
@@ -46,7 +45,7 @@ public class VideoService {
     private UserCoinService userCoinService;
 
     @Autowired
-    private LegacyUserFeignClient legacyUserFeignClient;
+    private UserService userService;
 
     @Autowired
     private ContentService contentService;
@@ -310,7 +309,7 @@ public class VideoService {
         Set<Long> userList = videoComments.stream().map(VideoComment::getUserId).collect(Collectors.toSet());
         Set<Long> userReplyList = videoCommentReplies.stream().map(VideoComment::getUserId).collect(Collectors.toSet());
         userList.addAll(userReplyList);
-        List<UserInfo> userInfoList = legacyUserFeignClient.getUserInfoByUserIds(userList);
+        List<UserInfo> userInfoList = userService.getUserInfoByUserIds(userList);
         Map<Long, UserInfo> userInfoListMap = userInfoList.stream().collect(Collectors.toMap(UserInfo::getUserId, UserInfo -> UserInfo));
         //将用户信息设置到一级评论和二级评论中
         for (VideoComment videoComment : videoComments) {
@@ -341,7 +340,7 @@ public class VideoService {
             videoTagList.add(tagMap);
         }
         Long userId = video.getUserId();
-        User user = legacyUserFeignClient.getUserInfo(userId);
+        User user = userService.getUserInfo(userId);
         if(user == null){
             throw new ConditionException("用户不存在");
         }
