@@ -360,11 +360,43 @@ content-service ─依赖→ common（接口+DTO） ←依赖─ user-service（
 
 ---
 
-#### 四、当前 Phase 2 为什么暂时用方案 A
+#### 四、当前 Phase 2 的实际情况
 
-Phase 2 的目标是先让 Feign 调用链路跑通（content-service → legacy 发动态），验证 Nacos 服务发现 + Feign + Gateway 路由整个链路是通的。此时共享 DB，domain 类字段暂时一致，直接复制是最快的方式。
+Phase 2 采用的是**混合策略**，不是纯方案 A，而是根据调用类型做了区分：
 
-Phase 3 拆 User Service 后，升级到方案 C——Feign 接口和 DTO 提到 common，消除重复，同时 content-service 再也看不到用户表的敏感字段。
+**1. 实体层面——复制了 domain 类（方案 A）**
+
+content-service 的 `src/main/java/com/imooc/bilibili/domain/` 下有 26 个 domain 类，全部从 legacy 完整复制。原因：
+
+- 共享同一个 MySQL 数据库，表结构完全相同，domain 字段暂时不会分化
+- 先让编译通过、服务跑起来，验证整个链路
+
+**2. 接口层面——@FeignClient 接口写在了调用方（方案 A 过渡态）**
+
+`LegacyMomentFeignClient` 和 `LegacyUserFeignClient` 定义在 content-service，与 legacy 的 Controller 各自写了一遍契约：
+
+```
+content-service                           legacy-service
+  LegacyMomentFeignClient                   UserMomentsApi
+    @PostMapping("/user-moments")       ←→   @PostMapping("/user-moments")
+    方法签名在这里定义了一次                   方法签名在这里又写了一遍
+```
+
+原因：先验证 Feign 能通过 Nacos 发现服务并成功调用，后续再用 common 统一管理接口定义。
+
+**3. 调用策略——区分了本地调用和远程调用**
+
+| 调用目标 | 当前方式 | 原因 |
+|---------|---------|------|
+| 查用户信息（`UserService.getUserInfo`） | **本地调用**（shared DB 直读） | 高频读操作，走 Feign 增加延迟；DB 暂时共享 |
+| 创建动态（`UserMomentsService.addUserMoments`） | **Feign 远程调用** | 动态是 Social 域的核心写操作，content-service 不应直接写动态表 |
+
+**Phase 3 要改进什么：**
+
+1. 拆出 `bilibili-user-service`，用户表操作完全归属它
+2. content-service 停掉本地 `UserService`，改为通过 Feign 调用 user-service
+3. 将 `@FeignClient` 接口和 DTO 提取到 `bilibili-common`，消除两份重复定义
+4. content-service 不再直接持有 UserDao、不再直连用户表
 
 ---
 
