@@ -13,7 +13,7 @@ import java.util.Set;
  * Feign 调用 Legacy 用户服务
  * 返回直接类型而非泛型 JsonResponse，避免 Jackson 反序列化时泛型丢失
  */
-@FeignClient(name = "bilibili-legacy-service", contextId = "legacyUser")
+@FeignClient(name = "bilibili-legacy-service", contextId = "legacyUser", url = "http://127.0.0.1:8070")
 public interface LegacyUserFeignClient {
 
     @GetMapping("/user/info")
