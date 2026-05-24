@@ -2,6 +2,7 @@ package com.imooc.bilibili.service;
 
 
 import com.alibaba.fastjson.JSONObject;
+import com.bilibili.content.feign.LegacyTagFeignClient;
 import com.bilibili.content.feign.LegacyUserFeignClient;
 import com.imooc.bilibili.dao.VideoDao;
 import com.imooc.bilibili.domain.*;
@@ -10,6 +11,7 @@ import com.imooc.bilibili.domain.exception.ConditionException;
 import com.imooc.bilibili.service.config.ThreadPoolConfig;
 import com.imooc.bilibili.service.util.IpUtil;
 import eu.bitwalker.useragentutils.UserAgent;
+import io.seata.spring.annotation.GlobalTransactional;
 import org.apache.rocketmq.client.producer.TransactionMQProducer;
 import org.apache.rocketmq.common.message.Message;
 import org.slf4j.Logger;
@@ -49,6 +51,9 @@ public class VideoService {
     private UserCoinService userCoinService;
 
     @Autowired
+    private LegacyTagFeignClient legacyTagFeignClient;
+
+    @Autowired
     private LegacyUserFeignClient legacyUserFeignClient;
 
     @Autowired
@@ -61,17 +66,19 @@ public class VideoService {
     ThreadPoolConfig threadPoolConfig;
 
 
+    @GlobalTransactional(name = "addVideos")  // Seata 分布式事务：视频入库 + Feign 写标签
     @Transactional
     public void addVideos(Video video) {
         video.setCreateTime(new Date());
         video.setUpdateTime(new Date());
         videoDao.addVideos(video);
+        // 视频-标签关联改为 Feign 远程调用 Legacy 创建（Seata 分布式事务场景）
         List<VideoTag> tagList = video.getVideoTagList();
         for (VideoTag tag : tagList) {
             tag.setVideoId(video.getId());
             tag.setCreateTime(new Date());
         }
-        videoDao.batchAddVideoTags(tagList);
+        legacyTagFeignClient.batchAddVideoTags(tagList);
         //新增：自动发布动态
         try{
             //添加动态内容

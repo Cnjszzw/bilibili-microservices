@@ -595,6 +595,48 @@ GET /moments?size=5&no=1
 
 ---
 
+### Q: Seata AT 在实际项目中有什么场景可以用？
+
+`addVideos()` 中新增了 Seata 演示场景——**视频-标签关联通过 Feign 远程创建**：
+
+```java
+@GlobalTransactional(name = "addVideos")     // Seata：DB 操作强一致
+@Transactional
+public void addVideos(Video video) {
+    videoDao.addVideos(video);                       // ① 本地 DB
+    legacyTagFeignClient.batchAddVideoTags(tagList);  // ② Feign→Legacy DB（Seata 管理）
+    contentService.addContent(content);              // ③ 本地 DB
+    momentTransactionProducer.sendMessageInTransaction(...); // ④ MQ 异步（不在 Seata 范围）
+}
+```
+
+**同一个方法里两种方案共存，形成对比：**
+
+| 子操作 | 方案 | 原因 |
+|--------|------|------|
+| ①②③ 视频+标签+内容 | Seata AT（@GlobalTransactional） | 纯 DB 操作，UNDO_LOG 即可回滚 |
+| ④ 发动态 | RocketMQ 事务消息 | 下游涉及 MQ + Redis，Seata 管不了 |
+
+**面试话术：**
+
+"`addVideos` 是我刻意设计的对比展示——标签关联走 Seata 强一致，动态创建走 RocketMQ 异步解耦。我想表达的观点是：**不同的子操作选不同的事务方案，按需组合。** 没有一种方案能通吃所有场景。"
+
+**Seata 部署（待执行）：**
+
+```bash
+# 1. Docker 启动 Seata Server
+docker run --name seata -p 8091:8091 -p 7091:7091 -d seataio/seata-server:1.6.1
+
+# 2. MySQL 创建 UNDO_LOG 表
+mysql -u root -p imooc-bilibili < seata-setup.sql
+```
+
+**回滚验证（部署 Seata Server 后）：**
+
+停掉 legacy → POST /videos → Feign 调用失败 → @GlobalTransactional 回滚 → t_video 和 t_video_tag 都没有新记录。
+
+---
+
 ### Q: 事务消息能保证消费者一定成功吗？
 
 **不能。这是对事务消息最常见的误解。**
