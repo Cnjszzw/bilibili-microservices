@@ -15,6 +15,6 @@ import java.util.List;
 @FeignClient(name = "bilibili-legacy-service", contextId = "legacyTag")
 public interface LegacyTagFeignClient {
 
-    @PostMapping("/video-tags")
+    @PostMapping(value = "/video-tags", consumes = "application/json")
     JsonResponse<String> batchAddVideoTags(@RequestBody List<VideoTag> tagList);
 }
