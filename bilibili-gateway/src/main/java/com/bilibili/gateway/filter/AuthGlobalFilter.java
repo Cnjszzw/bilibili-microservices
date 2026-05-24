@@ -45,7 +45,14 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
             "/video-slices-simple",
             "/viewImage",
             "/video-comments",
+            "/video-likes",
+            "/video-collections",
+            "/video-coins",
+            "/video-view-counts",
+            "/video-triple-clicks",
             "/danmus",
+            "/moments",
+            "/contents",
     };
 
     @Override
