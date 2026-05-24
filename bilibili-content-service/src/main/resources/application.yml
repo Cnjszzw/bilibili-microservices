@@ -43,7 +43,4 @@ fdfs:
     storage-addr: http://124.221.69.18:80/group1/
 
 # RocketMQ
-rocketmq:
-  name-server: 127.0.0.1:9876
-  producer:
-    group: video-moment-producer-group
+rocketmq.name.server.address: 127.0.0.1:9876

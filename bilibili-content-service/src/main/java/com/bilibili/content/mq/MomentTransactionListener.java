@@ -3,26 +3,26 @@ package com.bilibili.content.mq;
 import com.alibaba.fastjson.JSONObject;
 import com.imooc.bilibili.dao.ContentDao;
 import com.imooc.bilibili.domain.UserMoment;
-import com.imooc.bilibili.domain.constant.UserMomentsConstant;
-import org.apache.rocketmq.spring.annotation.RocketMQTransactionListener;
-import org.apache.rocketmq.spring.core.RocketMQLocalTransactionListener;
-import org.apache.rocketmq.spring.core.RocketMQLocalTransactionState;
+import org.apache.rocketmq.client.producer.LocalTransactionState;
+import org.apache.rocketmq.client.producer.TransactionListener;
+import org.apache.rocketmq.common.message.Message;
+import org.apache.rocketmq.common.message.MessageExt;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.messaging.Message;
+import org.springframework.stereotype.Component;
 
 /**
- * RocketMQ 事务消息监听器
+ * RocketMQ 事务消息监听器（原生客户端 API）
  * 保证视频投稿和动态创建的原子性
  * <p>
  * 流程：
- * 1. sendMessageInTransaction → 发送半消息到 Broker
- * 2. executeLocalTransaction → Spring @Transactional 未提交，返回 UNKNOWN
- * 3. Broker 超时后调用 checkLocalTransaction → 查 DB 验证视频是否已入库 → COMMIT 或 ROLLBACK
+ * 1. TransactionMQProducer.sendMessageInTransaction → 发送半消息到 Broker
+ * 2. executeLocalTransaction → Spring TX 未提交，返回 UNKNOW
+ * 3. Broker 超时后调用 checkLocalTransaction → 查 DB 验证 → COMMIT 或 ROLLBACK
  */
-@RocketMQTransactionListener
-public class MomentTransactionListener implements RocketMQLocalTransactionListener {
+@Component
+public class MomentTransactionListener implements TransactionListener {
 
     private static final Logger logger = LoggerFactory.getLogger(MomentTransactionListener.class);
 
@@ -30,28 +30,26 @@ public class MomentTransactionListener implements RocketMQLocalTransactionListen
     private ContentDao contentDao;
 
     @Override
-    public RocketMQLocalTransactionState executeLocalTransaction(Message msg, Object arg) {
-        // Spring 事务未提交，无法验证 DB 状态，交给 check 回调
+    public LocalTransactionState executeLocalTransaction(Message msg, Object arg) {
         logger.info("事务消息半消息已发送，等待 Spring TX 提交后回查");
-        return RocketMQLocalTransactionState.UNKNOWN;
+        return LocalTransactionState.UNKNOW;
     }
 
     @Override
-    public RocketMQLocalTransactionState checkLocalTransaction(Message msg) {
-        // Broker 回查：验证视频内容是否已入库
+    public LocalTransactionState checkLocalTransaction(MessageExt msg) {
         try {
-            String body = new String((byte[]) msg.getPayload());
+            String body = new String(msg.getBody());
             UserMoment moment = JSONObject.parseObject(body, UserMoment.class);
-            // 通过 contentId 查 Content 表，验证视频是否持久化成功
-            if (moment.getContentId() != null && contentDao.getContentById(moment.getContentId()) != null) {
+            if (moment.getContentId() != null
+                    && contentDao.getContentById(moment.getContentId()) != null) {
                 logger.info("回查成功：Content({}) 已入库，提交消息", moment.getContentId());
-                return RocketMQLocalTransactionState.COMMIT;
+                return LocalTransactionState.COMMIT_MESSAGE;
             }
             logger.warn("回查失败：Content({}) 未找到，回滚消息", moment.getContentId());
-            return RocketMQLocalTransactionState.ROLLBACK;
+            return LocalTransactionState.ROLLBACK_MESSAGE;
         } catch (Exception e) {
             logger.error("回查异常", e);
-            return RocketMQLocalTransactionState.ROLLBACK;
+            return LocalTransactionState.ROLLBACK_MESSAGE;
         }
     }
 }

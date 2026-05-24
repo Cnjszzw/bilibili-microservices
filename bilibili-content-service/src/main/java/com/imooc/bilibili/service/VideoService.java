@@ -9,14 +9,16 @@ import com.imooc.bilibili.domain.exception.ConditionException;
 import com.imooc.bilibili.service.config.ThreadPoolConfig;
 import com.imooc.bilibili.service.util.IpUtil;
 import eu.bitwalker.useragentutils.UserAgent;
-import org.apache.rocketmq.spring.core.RocketMQTemplate;
+import org.apache.rocketmq.client.producer.TransactionMQProducer;
+import org.apache.rocketmq.common.message.Message;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.nio.charset.StandardCharsets;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
@@ -52,7 +54,7 @@ public class VideoService {
     private ContentService contentService;
 
     @Autowired
-    private RocketMQTemplate rocketMQTemplate;
+    private TransactionMQProducer momentTransactionProducer;
 
     @Autowired
     ThreadPoolConfig threadPoolConfig;
@@ -81,15 +83,12 @@ public class VideoService {
             moment.setType(UserMomentsConstant.TYPE_VIDEO);
             moment.setContentId(contentId);
             moment.setUserId(video.getUserId());
-            // RocketMQ 事务消息：半消息 → Spring TX 提交 → Broker 回查确认
-            org.springframework.messaging.Message<String> mqMsg = MessageBuilder
-                    .withPayload(JSONObject.toJSONString(moment))
-                    .build();
-            rocketMQTemplate.sendMessageInTransaction(
+            // RocketMQ 事务消息（原生 API）
+            Message mqMsg = new Message(
                     UserMomentsConstant.TOPIC_MOMENTS,
-                    mqMsg,
-                    null
+                    JSONObject.toJSONString(moment).getBytes(StandardCharsets.UTF_8)
             );
+            momentTransactionProducer.sendMessageInTransaction(mqMsg, null);
         }catch (Exception e){
             throw new ConditionException("发布视频动态失败");
         }
