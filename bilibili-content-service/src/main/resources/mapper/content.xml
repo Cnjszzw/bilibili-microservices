@@ -18,4 +18,8 @@
              )
     </insert>
 
+    <select id="getContentById" parameterType="java.lang.Long" resultType="com.imooc.bilibili.domain.Content">
+        select * from t_content where id = #{id}
+    </select>
+
 </mapper>

@@ -2,7 +2,6 @@ package com.imooc.bilibili.service;
 
 
 import com.alibaba.fastjson.JSONObject;
-import com.bilibili.content.feign.LegacyMomentFeignClient;
 import com.imooc.bilibili.dao.VideoDao;
 import com.imooc.bilibili.domain.*;
 import com.imooc.bilibili.domain.constant.UserMomentsConstant;
@@ -10,10 +9,12 @@ import com.imooc.bilibili.domain.exception.ConditionException;
 import com.imooc.bilibili.service.config.ThreadPoolConfig;
 import com.imooc.bilibili.service.util.IpUtil;
 import eu.bitwalker.useragentutils.UserAgent;
+import org.apache.rocketmq.spring.core.RocketMQTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -51,7 +52,7 @@ public class VideoService {
     private ContentService contentService;
 
     @Autowired
-    private LegacyMomentFeignClient legacyMomentFeignClient;
+    private RocketMQTemplate rocketMQTemplate;
 
     @Autowired
     ThreadPoolConfig threadPoolConfig;
@@ -80,7 +81,15 @@ public class VideoService {
             moment.setType(UserMomentsConstant.TYPE_VIDEO);
             moment.setContentId(contentId);
             moment.setUserId(video.getUserId());
-            legacyMomentFeignClient.addUserMoments(moment);
+            // RocketMQ 事务消息：半消息 → Spring TX 提交 → Broker 回查确认
+            org.springframework.messaging.Message<String> mqMsg = MessageBuilder
+                    .withPayload(JSONObject.toJSONString(moment))
+                    .build();
+            rocketMQTemplate.sendMessageInTransaction(
+                    UserMomentsConstant.TOPIC_MOMENTS,
+                    mqMsg,
+                    null
+            );
         }catch (Exception e){
             throw new ConditionException("发布视频动态失败");
         }

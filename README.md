@@ -437,9 +437,80 @@ Phase 2 只完成了一处 Feign 调用（`addUserMoments`），恰好是因为�
 
 ---
 
-## 下一步（Phase 2）
+### Q: 视频投稿→发动态的分布式事务方案是如何选型的？
 
-拆分 Content Service：
-1. 新建 `bilibili-content-service`，迁移视频相关 Domain
-2. 通过 Feign 调用 User Service（或当前单体中的用户接口）
-3. 引入 Seata 分布式事务（视频投稿 → 自动发动态）
+**场景分析：**
+
+`addVideos()` 涉及三个存储系统（MySQL + RocketMQ + Redis）：
+
+```
+① 写视频表 t_video (MySQL)
+② 写内容表 t_content (MySQL)
+③ 创建动态   t_user_moment (MySQL，legacy 服务)
+   └─ 发 RocketMQ 扩散消息
+      └─ 写 Redis 粉丝收件箱
+```
+
+**四种方案逐一评估：**
+
+| 方案 | 能否用 | 排除原因 |
+|------|--------|---------|
+| **XA** | 排除 | 强一致性导致锁持有时间长，可用性低。同样只能覆盖 DB |
+| **AT (Seata)** | 排除 | UNDO_LOG 只对 MySQL 生效。MQ 已发出、Redis 已写入的情况下回滚，出现 DB 回滚但消息未回滚的二次不一致 |
+| **TCC** | 排除 | 手写 try/confirm/cancel，多场景累积代码量爆炸，需处理空回滚、幂等、悬挂 |
+| **最大努力通知** | ✅ 选定 | 接受短暂不一致（视频发布后动态晚1-2秒出现），用消息可靠性保证最终一致 |
+
+**最大努力通知的三种实现层次：**
+
+| 实现方式 | 可靠性 | 复杂度 | 结论 |
+|---------|--------|--------|------|
+| afterCommit 回调 | 低（JVM 崩溃窗口） | 最低 | 不够可靠 |
+| **RocketMQ 事务消息** | **高（半消息+Broker 回查兜底）** | **中** | **✅ 选定** |
+| 本地消息表+定时补偿 | 最高（DB 兜底） | 高 | 过度设计 |
+
+**最终实现：RocketMQ 事务消息**
+
+```
+content-service:
+  @Transactional
+  addVideos() {
+    videoDao.addVideos(video);         // ① 写视频
+    contentService.addContent(content); // ② 写内容
+    rocketMQTemplate.sendMessageInTransaction(
+      "Topic-Moments", momentMsg         // ③ 半消息 → Broker
+    );
+  }
+  // Spring TX 提交后 → Broker 回查 checkLocalTransaction → 查 Content 表验证
+
+legacy-service (新增 MomentPersistConsumer):
+  ↓ 收到 Topic-Moments 消息（与现有 MomentsGroup 消费者并行）
+  userMomentsDao.addUserMoments(moment); // ④ 写动态表
+  // 原有消费者继续：查粉丝 → Redis 推送
+```
+
+**涉及的代码变更：**
+
+| 服务 | 变更 |
+|------|------|
+| content-service | 新增 `rocketmq-spring-boot-starter` 依赖 + RocketMQ 配置 |
+| content-service | 新增 `MomentTransactionListener`（事务回查） |
+| content-service | `VideoService.addVideos()` 删 Feign 调用，改用 `RocketMQTemplate.sendMessageInTransaction()` |
+| content-service | 删 `LegacyMomentFeignClient`、`LegacyUserFeignClient`，移除 `@EnableFeignClients` |
+| legacy | `RocketMQConfig` 新增 `MomentPersistConsumer`，消费 `Topic-Moments` 写动态表 |
+
+**面试话术（为什么不用 Seata）：**
+
+"Seata AT 的 UNDO_LOG 只能回滚数据库操作。视频投稿后的动态创建不仅写 DB，还要发 MQ 推送粉丝、写 Redis 收件箱——后两步 Seata 管不了。DB 回滚而 MQ 消息已发出，会出现二次不一致。
+
+所以选择**分而治之**：核心写链路走本地事务保证 ACID，跨服务扩散链路用 RocketMQ 事务消息 + 消费重试实现最终一致。分布式环境没有银弹，在合适的边界处用不同的工具。"
+
+---
+
+## 下一步（Phase 3）
+
+拆分 User Service：
+1. 新建 `bilibili-user-service`，迁移用户相关 Domain/DAO/Service/API
+2. Content Service 停掉本地 `UserService`，改为 Feign 调用 user-service
+3. 将 `@FeignClient` 接口和 DTO 提取到 `bilibili-common`，消除重复定义
+4. Content Service 不再直接持有 UserDao，用户表完全归属 user-service
+5. Sentinel 接入：Gateway 层限流 + Feign 层熔断降级
