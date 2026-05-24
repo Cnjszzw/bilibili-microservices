@@ -45,18 +45,13 @@ fdfs:
 # RocketMQ
 rocketmq.name.server.address: 127.0.0.1:9876
 
-# Seata 分布式事务
+# Seata 分布式事务（开发环境直连，不走 Nacos 注册发现）
 seata:
   tx-service-group: bilibili-tx-group
   registry:
-    type: nacos
-    nacos:
-      server-addr: 127.0.0.1:8848
-      namespace: public
-      group: SEATA_GROUP
+    type: file
   config:
-    type: nacos
-    nacos:
-      server-addr: 127.0.0.1:8848
-      namespace: public
-      group: SEATA_GROUP
+    type: file
+  service:
+    grouplist:
+      default: 127.0.0.1:8091
