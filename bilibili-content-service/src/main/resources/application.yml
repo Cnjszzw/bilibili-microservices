@@ -53,5 +53,7 @@ seata:
   config:
     type: file
   service:
+    vgroup-mapping:
+      bilibili-tx-group: default
     grouplist:
       default: 127.0.0.1:8091
