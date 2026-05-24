@@ -30,20 +30,22 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
 
     private final AntPathMatcher pathMatcher = new AntPathMatcher();
 
-    // 白名单路径（不需要 token）
-    // 包含：注册登录、游客可访问的视频浏览接口等
-    private static final String[] WHITE_LIST = {
+    // 完全白名单（任何方法都不校验 token，注册/登录/媒体流等）
+    private static final String[] FULL_WHITE_LIST = {
             "/rsa-pks",
-            "/users",
             "/user-tokens",
             "/user-tokens/**",
             "/demo/**",
-            // 游客可访问的视频接口（不调 UserSupport 或内部 try-catch 兼容游客）
-            "/videos",
-            "/video-details",
             "/video-slices",
             "/video-slices-simple",
             "/viewImage",
+    };
+
+    // 读白名单（GET 游客可访问，POST 写操作仍需 token）
+    private static final String[] READ_WHITE_LIST = {
+            "/users",
+            "/videos",
+            "/video-details",
             "/video-comments",
             "/video-likes",
             "/video-collections",
@@ -59,9 +61,10 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
         ServerHttpRequest request = exchange.getRequest();
         String path = request.getURI().getPath();
+        String method = request.getMethodValue();
 
         // 放行 CORS 预检请求（OPTIONS）
-        if (request.getMethodValue().equalsIgnoreCase("OPTIONS")) {
+        if (method.equalsIgnoreCase("OPTIONS")) {
             return chain.filter(exchange);
         }
 
@@ -73,8 +76,13 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
             return chain.filter(exchange);
         }
 
-        // 白名单放行
-        if (isWhiteList(path)) {
+        // 完全白名单放行
+        if (isMatch(FULL_WHITE_LIST, path)) {
+            return chain.filter(exchange);
+        }
+
+        // 读白名单：GET 放行，POST 等写操作仍需 token
+        if ("GET".equalsIgnoreCase(method) && isMatch(READ_WHITE_LIST, path)) {
             return chain.filter(exchange);
         }
 
@@ -100,8 +108,8 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
         return chain.filter(exchange.mutate().request(mutatedRequest).build());
     }
 
-    private boolean isWhiteList(String path) {
-        for (String pattern : WHITE_LIST) {
+    private boolean isMatch(String[] patterns, String path) {
+        for (String pattern : patterns) {
             if (pathMatcher.match(pattern, path)) {
                 return true;
             }
