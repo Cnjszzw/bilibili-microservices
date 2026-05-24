@@ -45,7 +45,12 @@ fdfs:
 # RocketMQ
 rocketmq.name.server.address: 127.0.0.1:9876
 
-# Feign 日志（排查问题用，确认后关闭 DEBUG）
+# Feign 日志（排查问题用，确认后关闭）
+feign:
+  client:
+    config:
+      default:
+        loggerLevel: FULL
 logging:
   level:
     com.bilibili.content.feign: DEBUG
