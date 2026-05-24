@@ -45,15 +45,15 @@ fdfs:
 # RocketMQ
 rocketmq.name.server.address: 127.0.0.1:9876
 
-# Feign 日志（排查问题用，确认后关闭）
+# Feign 日志
 feign:
   client:
     config:
       default:
-        loggerLevel: FULL
+        loggerLevel: BASIC
 logging:
   level:
-    com.bilibili.content.feign: DEBUG
+    com.bilibili.content.feign: INFO
 
 # Seata 分布式事务（开发环境直连，不走 Nacos 注册发现）
 seata:
