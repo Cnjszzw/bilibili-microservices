@@ -400,6 +400,43 @@ content-service                           legacy-service
 
 ---
 
+### Q: 为什么 Feign 调用经常报 404？拆服务的隐藏成本是什么？
+
+**核心认知：微服务拆分 = 把 JVM 内部方法调用变成 HTTP 接口。**
+
+```
+单体架构：
+  VideoService → userService.getUserInfo(userId) → UserDao → DB
+  一个 import + 一个方法调用，搞定
+
+微服务架构：
+  VideoService → @FeignClient 调 /user/info → 提供方需要 @RestController 实现 /user/info
+  两个 HTTP 接口 + 一份契约匹配，才算拆完
+```
+
+**`getInfo` 报 404 的根因**：`UserService.getUserInfo()` 原来是 JVM 内方法调用，legacy 里根本没有对应的 HTTP 端点。`@FeignClient` 不是魔法——它背后是 HTTP 调用，目标服务必须有一个真实的 Controller 来处理这个请求。
+
+**拆分成本对照表**（以 `VideoService` 的 6 个依赖为例）：
+
+| 原来（单体，方法调用） | 拆分后需要 | 当前 Phase 2 状态 |
+|-----------------------|----------|-----------------|
+| `userMomentsService.addUserMoments()` | legacy 刚好已有 `POST /user-moments` | Feign 调用成功 |
+| `userService.getUserInfo()` | **需要新写** `/user-info` 端点 | 暂用本地调用（shared DB） |
+| `userService.getUserInfoByUserIds()` | **需要新写** 端点 | 暂用本地调用 |
+| `userCoinService.getUserCoinAmount()` | **需要新写** 端点 | 暂保留在 content-service 内 |
+| `contentService.addContent()` | Content 域，随 Content Service 一起迁移了 | 本地调用 |
+| `videoDao.*` | Video 域，随 Content Service 一起迁移了 | 本地调用 |
+
+**总结**：拆分一个服务，不只是把代码搬过去。每个原来通过 `@Autowired` 注入的外部依赖，如果该依赖留在了其他服务里，就得：
+
+1. 提供方（legacy）新写一个 HTTP 端点（Controller 方法）
+2. 调用方（content-service）新写一个 `@FeignClient` 接口
+3. 两边的路径、参数、返回值必须完全匹配
+
+Phase 2 只完成了一处 Feign 调用（`addUserMoments`），恰好是因为老项目碰巧有这个 HTTP 接口。剩下的外部依赖要么留在本地（共享 DB），要么等对应的服务拆出来后按需补端点。
+
+---
+
 ## 下一步（Phase 2）
 
 拆分 Content Service：
