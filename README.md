@@ -358,6 +358,21 @@ content-service ─依赖→ common（接口+DTO） ←依赖─ user-service（
 - **提供方负责 domain→DTO 转换**：user-service 内部从完整的 `User`（几十个字段）提取出 `UserDTO`（3 个字段）返回。
 - **调用方永远看不到不应看的字段**：content-service 只需要昵称和头像，拿不到密码。
 
+#### 补充：Feign 泛型擦除问题（实际踩坑记录）
+
+Java 泛型在编译成 `.class` 后会被擦除。`JsonResponse<User>` 在运行时变成 `JsonResponse<Object>`。
+
+**本地调用没问题**：对象是直接 new 出来的，`data` 字段本身是 `User` 实例。
+
+**Feign 调用出问题**：Feign 收到的只有 JSON 字符串，Jackson 需要知道反序列化成什么类型。但由于泛型擦除，Jackson 只知道目标是 `JsonResponse`，不知道 `data` 字段的具体类型：
+
+```
+Feign 收到: {"code":"0","data":{"id":45,"nick":"2"}}
+Jackson 反序列化成: JsonResponse（data 字段 → LinkedHashMap，不是 User！）
+```
+
+**结论**：Feign 接口返回类型不要用泛型封装类（如 `JsonResponse<User>`），直接返回裸实体（如 `User`、`List<UserInfo>`）。内部 Feign 端点用 `@GetMapping("/user/info") public User getUserInfo()` 而非套一层 `JsonResponse`。
+
 ---
 
 #### 四、当前 Phase 2 的实际情况
