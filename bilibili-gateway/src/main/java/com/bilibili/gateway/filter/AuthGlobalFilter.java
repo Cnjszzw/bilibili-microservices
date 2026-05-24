@@ -38,12 +38,14 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
             "/user-tokens",
             "/user-tokens/**",
             "/demo/**",
-            // 游客可访问的视频接口（不调用 UserSupport）
+            // 游客可访问的视频接口（不调 UserSupport 或内部 try-catch 兼容游客）
             "/videos",
             "/video-details",
             "/video-slices",
             "/video-slices-simple",
             "/viewImage",
+            "/video-comments",
+            "/danmus",
     };
 
     @Override
