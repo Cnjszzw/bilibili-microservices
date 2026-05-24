@@ -1,6 +1,5 @@
 package com.bilibili.content.feign;
 
-import com.imooc.bilibili.domain.JsonResponse;
 import com.imooc.bilibili.domain.User;
 import com.imooc.bilibili.domain.UserInfo;
 import org.springframework.cloud.openfeign.FeignClient;
@@ -12,14 +11,14 @@ import java.util.Set;
 
 /**
  * Feign 调用 Legacy 用户服务
- * Legacy 侧对应端点：UserApi.getUserInfo() / UserApi.getUserInfoByUserIds()
+ * 返回直接类型而非泛型 JsonResponse，避免 Jackson 反序列化时泛型丢失
  */
 @FeignClient(name = "bilibili-legacy-service", contextId = "legacyUser")
 public interface LegacyUserFeignClient {
 
     @GetMapping("/user/info")
-    JsonResponse<User> getUserInfo(@RequestParam("userId") Long userId);
+    User getUserInfo(@RequestParam("userId") Long userId);
 
     @GetMapping("/user/infos")
-    JsonResponse<List<UserInfo>> getUserInfoByUserIds(@RequestParam("userIds") Set<Long> userIds);
+    List<UserInfo> getUserInfoByUserIds(@RequestParam("userIds") Set<Long> userIds);
 }
