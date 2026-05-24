@@ -488,15 +488,104 @@ legacy-service (新增 MomentPersistConsumer):
   // 原有消费者继续：查粉丝 → Redis 推送
 ```
 
-**涉及的代码变更：**
+#### 最终实现：RocketMQ 事务消息（原生 API）
 
-| 服务 | 变更 |
-|------|------|
-| content-service | 新增 `rocketmq-spring-boot-starter` 依赖 + RocketMQ 配置 |
-| content-service | 新增 `MomentTransactionListener`（事务回查） |
-| content-service | `VideoService.addVideos()` 删 Feign 调用，改用 `RocketMQTemplate.sendMessageInTransaction()` |
-| content-service | 删 `LegacyMomentFeignClient`、`LegacyUserFeignClient`，移除 `@EnableFeignClients` |
-| legacy | `RocketMQConfig` 新增 `MomentPersistConsumer`，消费 `Topic-Moments` 写动态表 |
+Content Service 采用和 Legacy 一致的 `rocketmq-client` 原生 API，不引入 `rocketmq-spring-boot-starter`，避免 IDEA 依赖解析问题。
+
+**架构全景（正常链路）：**
+
+```
+POST /videos (携带 token)
+  │
+  ▼
+Gateway:8000
+  ├─ AuthGlobalFilter: token → X-User-Id: 45
+  ├─ 路由 /videos → bilibili-content-service(8002)
+  │
+  ▼
+ContentService:8002 (@Transactional)
+  VideoApi.addVideos()
+    └─ VideoService.addVideos()
+         ├─ ① videoDao.addVideos(video)              → INSERT t_video (id=117)
+         ├─ ② videoDao.batchAddVideoTags(tagList)     → INSERT t_video_tag
+         ├─ ③ contentService.addContent(content)      → INSERT t_content (id=86)
+         ├─ ④ 构建 UserMoment(type=0, contentId=86, userId=45)
+         └─ ⑤ momentTransactionProducer.sendMessageInTransaction(msg, null)
+              │
+              ▼ 半消息到达 Broker，落盘（消费者不可见）
+              │
+         Broker 回调 MomentTransactionListener.executeLocalTransaction()
+              → return UNKNOW（Spring TX 未提交，交给回查）
+              │
+         @Transactional 提交成功
+              │
+         Broker 定时回查 MomentTransactionListener.checkLocalTransaction()
+              → contentDao.getContentById(86) != null
+              → return COMMIT_MESSAGE
+              │
+              ▼ 消息对消费者可见
+              │
+  ┌───────────┴───────────────────────────┐
+  ▼                                       ▼
+Legacy: MomentsPersistGroup (新消费者)     Legacy: MomentsGroup (原有消费者)
+  userMomentsDao.addUserMoments()          查询粉丝列表
+  → INSERT t_user_moment ✓                 ├─ <10w: 遍历写 Redis subscribed-{fanId}
+                                           └─ ≥10w: 写 Redis outbox-{userId}
+                                           
+ContentService (@Transactional 外)
+  ElasticSearchService.addVideo(video)
+  → ES 索引视频（全文搜索）
+```
+
+**涉及的工程变更：**
+
+| 服务 | 文件 | 变更 |
+|------|------|------|
+| content-service | `pom.xml` | 不新增依赖，复用已有 `rocketmq-client` 4.9.1 |
+| content-service | `RocketMQConfig.java` | **新增** — 创建 `TransactionMQProducer` Bean，配置回查线程池和 `MomentTransactionListener` |
+| content-service | `MomentTransactionListener.java` | **新增** — 实现原生 `TransactionListener`，`executeLocalTransaction` 返回 UNKNOW，`checkLocalTransaction` 查 Content 表验证 |
+| content-service | `VideoService.java` | `@Autowired TransactionMQProducer`，`sendMessageInTransaction(msg, null)` 替换 Feign 调用 |
+| content-service | `ContentDao.java` + `content.xml` | 新增 `getContentById`，供事务回查使用 |
+| content-service | `ContentServiceApplication.java` | 新增 `@EnableElasticsearchRepositories` |
+| content-service | `LegacyMomentFeignClient.java` | **删除** |
+| content-service | `LegacyUserFeignClient.java` | **删除** |
+| content-service | `ContentServiceApplication.java` | 移除 `@EnableFeignClients` |
+| legacy | `RocketMQConfig.java` | 新增 `MomentPersistConsumer` Bean（consumer group `MomentsPersistGroup`），消费 `Topic-Moments` 写动态表 |
+
+**异常场景分析：**
+
+| 异常 | 表现 | 结果 |
+|------|------|------|
+| Content Service 本地事务回滚 | 视频入库失败，`@Transactional` 回滚 | 半消息已到 Broker，回查时 `getContentById` 返回 null → ROLLBACK → 消息删除，消费者永远看不到 |
+| Broker 回查前 Content Service 宕机 | Broker 收不到回查响应 | Broker 递增间隔重试 15 次（约 1 小时内），恢复后回查成功 → COMMIT |
+| Legacy 宕机（消费者不可用） | 消息在 Broker 磁盘上积压 | 视频正常发布。Legacy 恢复后拉取积压消息继续消费，动态延迟补上 |
+| MomentPersistConsumer 写 DB 失败 | DB 抛异常，不返回 CONSUME_SUCCESS | Broker 重投 16 次（10s→30s→1min→...→2h），全部失败后进死信队列，人工重放 |
+| MomentsGroup 扩散消费者写 Redis 失败 | Redis 抛异常 | 同上，独立重试不影响入库消费者。可能出现「动态入库但未推送」的中间态，最终一致 |
+| Broker 宕机 | 消息不可投递 | 支持主从同步/异步刷盘，同步刷盘模式消息不丢。恢复后继续投递 |
+
+**与最初 Feign 方案对比：**
+
+| | Feign 同步调用（已废弃） | RocketMQ 事务消息（当前） |
+|--|------------------------|-------------------------|
+| content→legacy 通信 | HTTP 同步 | MQ 异步 |
+| Legacy 宕机 | **视频投稿失败** | 视频正常发布，动态等 Legacy 恢复后补上 |
+| 一致性 | @Transactional 本地事务 | 半消息 + Broker 回查 + 消费重试，最终一致 |
+| 额外依赖 | OpenFeign | 无（复用已有 rocketmq-client） |
+| 延迟 | 同步等待 Legacy 返回 | 消息投递通常 < 100ms，动态基本实时出现 |
+
+**测试验证：**
+
+```bash
+# 投稿成功（2024-05-24 已通过）
+POST /videos
+  → HTTP 200，t_video 新增 id=117
+  → t_content 新增 id=86
+  → RocketMQ 事务消息 COMMIT
+
+# 动态可见
+GET /moments?size=5&no=1
+  → 5 条动态列表，包含刚才投稿的 "RocketMQ 事务测试"
+```
 
 **面试话术（为什么不用 Seata）：**
 
